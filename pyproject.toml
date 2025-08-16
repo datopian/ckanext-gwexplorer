@@ -1,0 +1,38 @@
+[project]
+name = "ckanext-gwexplorer"
+version = "0.0.1"
+description = ""
+readme = "README.md"
+authors = [
+    {name = "Sagar Ghimire", email = "sagar.ghimire@datopian.com"}
+]
+license = {text = "AGPL"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+
+keywords = [ "CKAN", ]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sagargg/ckanext-gwexplorer"
+
+[project.entry-points."ckan.plugins"]
+gwexplorer = "ckanext.gwexplorer.plugin:GwexplorerPlugin"
+
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+        "ignore::sqlalchemy.exc.SADeprecationWarning",
+        "ignore::sqlalchemy.exc.SAWarning",
+        "ignore::DeprecationWarning",
+]
+addopts = "--ckan-ini test.ini"

@@ -1,0 +1,6 @@
+include README.rst
+include LICENSE
+include requirements.txt
+recursive-include ckanext/gwexplorer *.html *.json *.js *.less *.css *.mo *.yml
+recursive-include ckanext/gwexplorer/migration *.ini *.py *.mako
+recursive-include ckanext/gwexplorer/public *.*

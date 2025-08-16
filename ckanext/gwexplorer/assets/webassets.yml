@@ -1,0 +1,18 @@
+gwexplorer-js:
+  filter: rjsmin
+  output: ckanext-gwexplorer/%(version)s-gwexplorer.js
+  contents:
+    - js/main.a298067b.js
+    - js/main.a298067b.js.map
+  extra:
+    preload:
+      - base/main
+
+gwexplorer-css:
+  filter: cssrewrite
+  output: ckanext-gwexplorer/%(version)s-gwexplorer.css
+  contents:
+    - css/gwexplorer.css
+  extra:
+    preload:
+      - base/main
