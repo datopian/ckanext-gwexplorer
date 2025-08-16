@@ -2,8 +2,8 @@ gwexplorer-js:
   filter: rjsmin
   output: ckanext-gwexplorer/%(version)s-gwexplorer.js
   contents:
-    - js/main.a298067b.js
-    - js/main.a298067b.js.map
+    - js/main.72fe8104.js
+    - js/main.72fe8104.js.map
   extra:
     preload:
       - base/main
