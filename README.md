@@ -7,8 +7,6 @@ A CKAN data explorer built with [Graphic Walker](https://docs.kanaries.net/graph
 ## Visualization 
 <img width="1049" height="857" alt="Screenshot 2025-08-19 at 12 41 31 PM" src="https://github.com/user-attachments/assets/386fa51a-5b36-48f3-8b52-0d8e3e8dfa71" />
 
-
-
 # Installation 
 
 1. Activate your CKAN virtual environment, for example::
@@ -23,3 +21,8 @@ A CKAN data explorer built with [Graphic Walker](https://docs.kanaries.net/graph
   ```
     ckan.views.default_views = image_view gwexplorer .. 
   ```
+
+
+## Development 
+It is built on [CKAN Graphic Walker](https://github.com/datopian/ckan-gw-explorer?tab=readme-ov-file#development). You can explore more in the repository if you need to modify it.
+
