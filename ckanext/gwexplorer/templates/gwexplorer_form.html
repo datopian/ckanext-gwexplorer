@@ -1,0 +1,44 @@
+{% import 'macros/form.html' as form %}
+
+{# Builder-only styling. This template is included only on the Data Explorer
+   view edit page, so these page-scoped rules don't leak to the rest of CKAN. #}
+<style>
+  /* Drop the core fields we don't need for a Data Explorer view
+     (CKAN 2.11 wraps each field in .form-group). Full-page width is handled
+     natively by info()['full_page_edit']. */
+  .form-group:has(#field-description),
+  .form-group:has(.resource-view-add-filter) { display: none !important; }
+
+  #gw-dataexplorer-editor {
+    width: 100%;
+    max-width: 100%;
+    height: 70vh;
+    min-height: 520px;
+    overflow: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+  }
+</style>
+
+<div class="form-group">
+  <div class="controls">
+
+    {# Hidden field persisted with the view config. The explorer bundle writes
+       the current Graphic Walker spec (IChart[] JSON) into it on form submit. #}
+    <input type="hidden" id="field-gw_spec" name="gw_spec" value="{{ data.gw_spec or '' }}" />
+    {% if errors.gw_spec %}
+      <span class="error-block">{{ errors.gw_spec }}</span>
+    {% endif %}
+
+    <div id="gw-dataexplorer-editor"
+         data-mode="edit"
+         data-ckan-url="{{ g.site_url }}"
+         data-resource-id="{{ resource.id }}"
+         data-spec="{{ data.gw_spec or '' }}"
+         data-target-input="field-gw_spec"></div>
+  </div>
+    {{ form.info(_('Build one or more charts below. They are saved automatically with this view when you click Add / Update, and pre-load on the dataset page. Leave empty to auto-generate a default chart from the data.')) }}
+</div>
+
+{% asset 'gwexplorer/gwexplorer-css' %}
+{% asset 'gwexplorer/gwexplorer-js' %}

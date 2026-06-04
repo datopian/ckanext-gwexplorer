@@ -13,6 +13,10 @@ DEFAULT_POOL_SIZE = 15
 DEFAULT_MAX_OVERFLOW = 100
 DEFAULT_POOL_RECYCLE = 3600
 
+# Field-name fragments used to auto-detect geographic coordinate columns.
+LATITUDE_HINTS = ("latitude", "lat", "y")
+LONGITUDE_HINTS = ("longitude", "long", "lng", "lon", "x")
+
 log = logging.getLogger(__name__)
 
 
@@ -286,6 +290,168 @@ class DSLService:
             }
 
 
+def _field_ref(field: Dict[str, Any], as_measure: bool = False) -> Dict[str, Any]:
+    """Build a Graphic Walker encoding field reference from table metadata."""
+    ref = {
+        "fid": field["fid"],
+        "name": field.get("name", field["fid"]),
+        "semanticType": field.get("semanticType", "nominal"),
+        "analyticType": field.get("analyticType", "dimension"),
+    }
+    if as_measure:
+        ref["analyticType"] = "measure"
+        ref["aggName"] = "sum"
+    return ref
+
+
+def _looks_like(name: str, hints) -> bool:
+    name = (name or "").strip().lower()
+    return any(name == h or name.startswith(h) for h in hints)
+
+
+def _find_geo_pair(fields):
+    """Return (lat_field, lon_field) if the columns look like coordinates."""
+    lat = lon = None
+    for f in fields:
+        if f.get("semanticType") != "quantitative":
+            continue
+        key = f.get("fid", "") or f.get("name", "")
+        if lat is None and _looks_like(key, ("latitude", "lat")):
+            lat = f
+        elif lon is None and _looks_like(key, ("longitude", "long", "lng", "lon")):
+            lon = f
+    return (lat, lon) if (lat and lon) else (None, None)
+
+
+def build_default_charts(fields: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Generate sensible default Graphic Walker chart spec(s) for a dataset.
+
+    Returns a list of *partial* chart specs (``PartialChart[]``). The client
+    runs each through Graphic Walker's ``fillChart`` to produce a complete,
+    valid ``IChart`` — so we only need to express the meaningful choices here:
+    which fields go on which channel, the geom, and the coordinate system.
+
+    Heuristic (first match wins; a geographic chart is always added when
+    coordinate columns are present):
+    - lat/lon columns        -> geographic point map
+    - temporal + measure     -> line chart over time
+    - dimension + measure    -> aggregated bar chart
+    - two quantitative cols   -> scatter plot
+    - otherwise              -> bar of the first dimension by record count
+    """
+    if not fields:
+        return []
+
+    # Full field palette (everything is available in the editor regardless of
+    # what the default chart places on a channel).
+    palette = {
+        "dimensions": [
+            _field_ref(f) for f in fields if f.get("analyticType") == "dimension"
+        ],
+        "measures": [
+            _field_ref(f, as_measure=True)
+            for f in fields
+            if f.get("analyticType") == "measure"
+        ],
+    }
+
+    lat, lon = _find_geo_pair(fields)
+    # Coordinate columns are placed on the map; exclude them from the pools used
+    # to pick a statistical chart so we don't, e.g., scatter latitude vs longitude.
+    geo_fids = {f["fid"] for f in (lat, lon) if f}
+    selectable = [f for f in fields if f.get("fid") not in geo_fids]
+
+    dimensions = [f for f in selectable if f.get("analyticType") == "dimension"]
+    measures = [f for f in selectable if f.get("analyticType") == "measure"]
+    temporal = [f for f in selectable if f.get("semanticType") == "temporal"]
+
+    def chart(name, geoms, encodings, coord="generic", aggregated=True):
+        return {
+            "name": name,
+            "encodings": {**palette, **encodings},
+            "config": {
+                "defaultAggregated": aggregated,
+                "geoms": geoms,
+                "coordSystem": coord,
+            },
+        }
+
+    charts: List[Dict[str, Any]] = []
+
+    if lat and lon:
+        charts.append(
+            chart(
+                "Map",
+                ["poi"],
+                {
+                    "latitude": [_field_ref(lat, as_measure=True)],
+                    "longitude": [_field_ref(lon, as_measure=True)],
+                },
+                coord="geographic",
+                aggregated=False,
+            )
+        )
+
+    if temporal and measures:
+        charts.append(
+            chart(
+                "Trend",
+                ["line"],
+                {
+                    "columns": [_field_ref(temporal[0])],
+                    "rows": [_field_ref(measures[0], as_measure=True)],
+                },
+            )
+        )
+    elif dimensions and measures:
+        charts.append(
+            chart(
+                "Summary",
+                ["bar"],
+                {
+                    "columns": [_field_ref(dimensions[0])],
+                    "rows": [_field_ref(measures[0], as_measure=True)],
+                },
+            )
+        )
+    elif len(measures) >= 2:
+        charts.append(
+            chart(
+                "Scatter",
+                ["point"],
+                {
+                    "columns": [_field_ref(measures[0])],
+                    "rows": [_field_ref(measures[1])],
+                },
+                aggregated=False,
+            )
+        )
+    elif not charts and dimensions:
+        # Nothing numeric to aggregate: fall back to a record count per category.
+        charts.append(
+            chart(
+                "Count",
+                ["bar"],
+                {
+                    "columns": [_field_ref(dimensions[0])],
+                    "rows": [
+                        {
+                            "fid": "gw_count_fid",
+                            "name": "Row count",
+                            "semanticType": "quantitative",
+                            "analyticType": "measure",
+                            "aggName": "count",
+                            "computed": True,
+                            "expression": {"op": "one", "params": [], "as": "gw_count_fid"},
+                        }
+                    ],
+                },
+            )
+        )
+
+    return charts
+
+
 # Global service instance
 _dsl_service = DSLService()
 
@@ -338,3 +504,44 @@ def dsl_query_data(
     payload = data_dict.get("payload")
 
     return _dsl_service.query_data(resource_id, payload)
+
+
+def gwexplorer_default_spec(
+    context: Dict[str, Any], data_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Suggest default Graphic Walker chart(s) for a resource based on its schema.
+
+    Used when a resource view has no publisher preset: the explorer boots with
+    these auto-generated charts (geo / line / bar / scatter) chosen from the
+    field types. Returns ``PartialChart[]`` which the client normalises via
+    ``fillChart``.
+
+    Args:
+        context: CKAN context
+        data_dict: Must contain ``resourceID``
+
+    Returns:
+        Dictionary with ``success`` and a ``spec`` list of partial charts.
+    """
+    resource_id = data_dict.get("resourceID")
+    if not resource_id:
+        return tk.abort(400, "resourceID field is required")
+
+    tk.check_access("resource_show", context, {"id": resource_id})
+
+    try:
+        fields = _dsl_service.get_table_metadata(resource_id, sort=False)
+        return {
+            "success": True,
+            "spec": build_default_charts(fields),
+            "resource_id": resource_id,
+            "message": "",
+        }
+    except Exception as e:
+        log.error(f"Error building default spec for resource {resource_id}: {e}")
+        return {
+            "success": False,
+            "spec": [],
+            "resource_id": resource_id,
+            "message": f"Error building default spec: {e}",
+        }

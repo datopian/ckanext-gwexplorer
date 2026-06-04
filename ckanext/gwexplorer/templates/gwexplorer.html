@@ -1,11 +1,10 @@
-{% extends "base.html" %}
+{# Inline fragment (this view is non-iframed). Rendered directly into the
+   resource page, the preview, and the standalone embed page. CSS is loaded
+   globally via header.html; the JS asset is enqueued here. #}
+<div id="gw-dataexplorer"
+     data-mode="view"
+     data-ckan-url="{{ g.site_url }}"
+     data-resource-id="{{ resource.id or resource_view.resource_id }}"
+     data-spec="{{ resource_view.gw_spec or '' }}"></div>
 
-{% block page %}
-  <div id="gw-dataexplorer" data-ckan-url="{{ g.site_url }}" data-resource-id="{{ resource_view.resource_id }}"></div>
-{% endblock %}
-
-{% block scripts %}
-    {{ super() }}
-    {% asset 'gwexplorer/gwexplorer-js' %}
-{% endblock  %}
-
+{% asset 'gwexplorer/gwexplorer-js' %}
