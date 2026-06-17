@@ -25,6 +25,20 @@ class DSLQueryError(Exception):
     pass
 
 
+def _reset_gw_dsl_parser() -> None:
+    """Recreate the gw_dsl_parser WASM singleton.
+
+    gw_dsl_parser instantiates its WASM module into one shared wasmtime
+    Store on every query and never releases the instances, so after 10k
+    queries the store hits wasmtime's instance limit and every query
+    fails ("resource limit exceeded: instance count too high") until the
+    singleton and its store are recreated.
+    """
+    from gw_dsl_parser import core as gw_dsl_core
+
+    gw_dsl_core.dsl_to_wasm = gw_dsl_core.DslToSqlWasm()
+
+
 class DatabaseConnectionError(Exception):
     """Custom exception for database connection errors."""
 
@@ -197,7 +211,16 @@ class DSLService:
         """
         try:
             table_parser = self._get_table_parser(table_name)
-            result = table_parser.get_datas_by_payload(payload)
+            try:
+                result = table_parser.get_datas_by_payload(payload)
+            except Exception as e:
+                if "instance count too high" not in str(e):
+                    raise
+                log.warning(
+                    "gw_dsl_parser WASM store exhausted, resetting and retrying"
+                )
+                _reset_gw_dsl_parser()
+                result = table_parser.get_datas_by_payload(payload)
 
             filtered_response = [
                 {
