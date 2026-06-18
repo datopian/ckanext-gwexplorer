@@ -242,4 +242,4 @@ ckanext/gwexplorer/
 
 ## License
 
-MIT © OKNP / Datopian
+MIT
