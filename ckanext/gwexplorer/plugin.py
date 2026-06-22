@@ -48,7 +48,7 @@ class GwexplorerPlugin(plugins.SingletonPlugin):
         return {
             'name': 'gwexplorer',
             'title': 'Data Explorer',
-            'requires_datastore': True,
+            'requires_datastore': False,
             'default_title': tk._('Data Explorer'),
             'iframed': False,
             'full_page_edit': True,

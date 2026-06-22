@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, List, Any
 import json
 
@@ -12,6 +13,32 @@ COLUMNS_TO_EXCLUDE = ["_id", "id", "_full_text"]
 DEFAULT_POOL_SIZE = 15
 DEFAULT_MAX_OVERFLOW = 100
 DEFAULT_POOL_RECYCLE = 3600
+
+# In-memory DuckDB used to explore file-based (non-datastore) resources. Each
+# query embeds its own file path via read_csv_auto(), so a single shared engine
+# carries no per-resource state.
+DUCKDB_URL = "duckdb:///:memory:"
+
+# Resource formats DuckDB reads directly off disk (delimiter override, or None
+# to let DuckDB sniff it).
+DUCKDB_FORMATS = {"csv": None, "tsv": "\\t"}
+
+# Spreadsheet formats DuckDB 0.10.x can't read natively; loaded via pandas.
+EXCEL_FORMATS = {"xls", "xlsx"}
+
+# DuckDB engine settings. autoinstall/autoload let DuckDB pull in and load the
+# httpfs extension on demand, so read_csv_auto() can stream a remote (http/https)
+# resource file directly -- no local download. Reading a remote file needs
+# outbound access to the resource URL (and, on first use per host, to the DuckDB
+# extension repository to install httpfs).
+DUCKDB_ENGINE_PARAMS = {
+    "connect_args": {
+        "config": {
+            "autoinstall_known_extensions": True,
+            "autoload_known_extensions": True,
+        }
+    }
+}
 
 # Field-name fragments used to auto-detect geographic coordinate columns.
 LATITUDE_HINTS = ("latitude", "lat", "y")
@@ -101,34 +128,137 @@ class DSLService:
 
     def _get_table_parser(self, table_name: str) -> Any:
         """
-        Create and return a table parser for the given table name.
+        Create and return a table parser for the given resource.
+
+        The backend is chosen per resource: datastore-active resources are
+        queried over PostgreSQL (the datastore read URL), while non-datastore
+        resources are read straight from their uploaded file -- delimited
+        formats via an in-memory DuckDB, spreadsheets via pandas. This mirrors
+        the dual-mode logic in ``GwexplorerPlugin.can_view``.
 
         Args:
-            table_name: Name of the table to parse
+            table_name: Resource ID to parse
 
         Returns:
             Table parser object
 
         Raises:
-            DatabaseConnectionError: If connection to database fails
+            DatabaseConnectionError: If a parser cannot be created
         """
         try:
-            read_url = tk.config.get("ckan.datastore.read_url", "")
-            if not read_url:
-                raise DatabaseConnectionError("Database read URL not configured")
-
-            conn = Connector(
-                read_url,
-                f'select * from "{adapt(table_name).adapted}"',
-                engine_params=self._get_database_connection_params(),
+            resource = tk.get_action("resource_show")(
+                {"ignore_auth": True}, {"id": table_name}
             )
 
-            return get_parser(
-                conn, infer_string_to_date=False, infer_number_to_dimension=False
-            )
+            if resource.get("datastore_active"):
+                return self._get_datastore_parser(table_name)
+
+            return self._get_file_parser(resource)
+        except DatabaseConnectionError:
+            raise
         except Exception as e:
             log.error(f"Failed to create table parser for {table_name}: {e}")
             raise DatabaseConnectionError(f"Database connection failed: {e}")
+
+    def _get_datastore_parser(self, table_name: str) -> Any:
+        """Build a parser backed by the PostgreSQL datastore table."""
+        read_url = tk.config.get("ckan.datastore.read_url", "")
+        if not read_url:
+            raise DatabaseConnectionError("Database read URL not configured")
+
+        conn = Connector(
+            read_url,
+            f'select * from "{adapt(table_name).adapted}"',
+            engine_params=self._get_database_connection_params(),
+        )
+
+        return get_parser(
+            conn, infer_string_to_date=False, infer_number_to_dimension=False
+        )
+
+    def _get_file_parser(self, resource: Dict[str, Any]) -> Any:
+        """Build a parser backed by a resource's data file (upload or remote)."""
+        fmt = self._resource_format(resource)
+        source = self._get_resource_source(resource)
+
+        if fmt in EXCEL_FORMATS:
+            return self._get_excel_parser(source, fmt)
+        if fmt in DUCKDB_FORMATS:
+            return self._get_duckdb_parser(source, fmt)
+
+        raise DatabaseConnectionError(
+            f"Unsupported file format for exploration: {fmt or 'unknown'}"
+        )
+
+    def _get_duckdb_parser(self, source: str, fmt: str) -> Any:
+        """Build a parser that reads a delimited file via in-memory DuckDB.
+
+        ``source`` is either a local filesystem path (uploads) or an http(s)
+        URL (remote resources), which DuckDB reads in place via httpfs.
+        """
+        safe_source = source.replace("'", "''")
+        delim = DUCKDB_FORMATS.get(fmt)
+        if delim:
+            view_sql = f"SELECT * FROM read_csv_auto('{safe_source}', delim='{delim}')"
+        else:
+            view_sql = f"SELECT * FROM read_csv_auto('{safe_source}')"
+
+        conn = Connector(DUCKDB_URL, view_sql, engine_params=DUCKDB_ENGINE_PARAMS)
+        return get_parser(
+            conn, infer_string_to_date=False, infer_number_to_dimension=False
+        )
+
+    def _get_excel_parser(self, source: str, fmt: str) -> Any:
+        """Build a parser from a spreadsheet read into a pandas DataFrame.
+
+        ``source`` may be a local path (uploads) or an http(s) URL (remote);
+        pandas reads either. CKAN stores uploads without a file extension, so
+        the reader engine is selected from the resource format, not the source.
+        """
+        import pandas as pd
+
+        engine = "xlrd" if fmt == "xls" else "openpyxl"
+        df = pd.read_excel(source, engine=engine)
+        return get_parser(
+            df, infer_string_to_date=False, infer_number_to_dimension=False
+        )
+
+    def _resource_format(self, resource: Dict[str, Any]) -> str:
+        """Return the resource's lowercased format, falling back to the URL extension."""
+        from urllib.parse import urlparse
+
+        fmt = (resource.get("format") or "").strip().lower()
+        if fmt:
+            return fmt
+        # Use the URL path only, so a query string doesn't pollute the extension.
+        path = urlparse(resource.get("url") or "").path
+        return os.path.splitext(path)[1].lstrip(".").lower()
+
+    def _get_resource_source(self, resource: Dict[str, Any]) -> str:
+        """Return a readable source for the resource's data file.
+
+        Uploaded resources resolve to their local path in CKAN storage; remote
+        resources return their URL, which DuckDB (via httpfs) and pandas read
+        in place -- no local copy is made.
+        """
+        if resource.get("url_type") == "upload":
+            from ckan.lib.uploader import get_resource_uploader
+
+            upload = get_resource_uploader(resource)
+            path = upload.get_path(resource["id"])
+            if path and os.path.exists(path):
+                return path
+            raise DatabaseConnectionError(
+                f"Uploaded file for resource {resource['id']} is not available "
+                "on disk"
+            )
+
+        url = resource.get("url")
+        if not url:
+            raise DatabaseConnectionError(
+                f"Resource {resource['id']} has no file to explore"
+            )
+        return url
 
     def _get_name_title_map(self, table_name: str) -> Dict[str, str]:
         """
